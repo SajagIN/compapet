@@ -7,7 +7,8 @@ from PyQt5.QtWidgets import (
     QSystemTrayIcon, QMenu, QAction, QDesktopWidget, QStyle
 )
 from PyQt5.QtGui import QPixmap, QTransform, QIcon
-from PyQt5.QtCore import Qt, QTimer, QPoint, QRect, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, QPoint, QRect, pyqtSignal, QUrl
+from PyQt5.QtMultimedia import QMediaPlayer, QMediaContent
 
 CAT_WIDTH = 120
 CAT_HEIGHT = 120
@@ -268,6 +269,15 @@ class CatCompanionApp(QWidget):
 
         self.control_box = None
 
+        # Audio setup
+        self.media_player = QMediaPlayer(self)
+        self.audio_files = {} # Stores QUrl objects for audio
+        self.audio_enabled = True
+        self.audio_play_timer = QTimer(self)
+        self.audio_play_timer.timeout.connect(self._play_random_audio)
+        self.media_player.stateChanged.connect(self._audio_state_changed)
+
+
         self.tray_icon = QSystemTrayIcon(self)
         
         self.tray_icon.setToolTip("Desk Pet Companion")
@@ -281,6 +291,11 @@ class CatCompanionApp(QWidget):
         self.open_control_box_action = QAction("Open Control Box", self)
         self.open_control_box_action.triggered.connect(self._open_control_box)
         tray_menu.addAction(self.open_control_box_action)
+
+        # New: Toggle Audio Action
+        self.toggle_audio_action = QAction("Disable Audio", self)
+        self.toggle_audio_action.triggered.connect(self._toggle_audio)
+        tray_menu.addAction(self.toggle_audio_action)
 
         tray_menu.addSeparator()
 
@@ -306,7 +321,6 @@ class CatCompanionApp(QWidget):
 
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
 
-        # Initialize tray icon animation attributes BEFORE calling change_pet_type
         self.tray_icon_current_frame_index = 0
         self.tray_animation_timer = QTimer(self)
         self.tray_animation_timer.timeout.connect(self._update_tray_icon_animation)
@@ -317,6 +331,7 @@ class CatCompanionApp(QWidget):
 
         self.show()
         self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
+        self.audio_play_timer.start(random.randint(5000, 15000))
 
 
     def _get_asset_path(self, animation_name, frame_number):
@@ -347,6 +362,15 @@ class CatCompanionApp(QWidget):
                 except Exception as e:
                     print(f"Error loading {path}: {e}")
         return all_sprites
+    
+    def _load_audio_file(self, pet_type):
+        audio_path = os.path.join(os.path.dirname(__file__), 'assets', pet_type, 'audio.wav')
+        if os.path.exists(audio_path):
+            return QUrl.fromLocalFile(audio_path)
+        else:
+            print(f"Warning: Audio file not found for {pet_type} at {audio_path}")
+            return None
+
 
     def change_pet_type(self, pet_type):
         if self.current_asset_type == 'cat':
@@ -356,6 +380,7 @@ class CatCompanionApp(QWidget):
 
         self.current_asset_type = pet_type
         self.sprites = self._load_sprites()
+        self.audio_files[self.current_asset_type] = self._load_audio_file(self.current_asset_type)
 
         if self.sprites:
             self._set_animation('Idle')
@@ -374,6 +399,11 @@ class CatCompanionApp(QWidget):
                 self.current_asset_type = 'cat'
                 self.cat_action.setChecked(True)
                 print(f"Failed to load 'dog' sprites. Reverted to 'cat'.")
+        
+        # Stop current audio and restart timer for new pet's audio
+        self.media_player.stop()
+        if self.audio_enabled:
+            self.audio_play_timer.start(random.randint(1000, 5000)) # Short delay for new audio
 
 
     def _set_initial_position(self):
@@ -735,6 +765,7 @@ class CatCompanionApp(QWidget):
             self.is_edge_running = False
             self.is_sliding = False
             self._is_jumping = False
+            self.media_player.stop() # Stop audio when dragging
 
     def mouseMoveEvent(self, event):
         if self.dragging:
@@ -754,6 +785,9 @@ class CatCompanionApp(QWidget):
             else:
                 if not self._is_manual_moving:
                     self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
+            if self.audio_enabled and self.media_player.state() == QMediaPlayer.StoppedState:
+                self.audio_play_timer.start(random.randint(1000, 5000)) # Restart audio timer after dragging
+
 
     def _play_one_shot_animation(self, animation_name):
         if animation_name not in self.sprites or not self.sprites[animation_name]:
@@ -767,6 +801,7 @@ class CatCompanionApp(QWidget):
         self.random_behavior_timer.stop()
         self._is_manual_moving = False
         self.cat_velocity_x = 0.0
+        self.media_player.stop() # Stop audio before playing one-shot animation
 
         if animation_name == 'Jump':
             self.cat_velocity_y = -JUMP_INITIAL_VELOCITY
@@ -786,6 +821,8 @@ class CatCompanionApp(QWidget):
         self._set_animation('Idle')
         if not self._is_manual_moving:
             self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
+        if self.audio_enabled and self.media_player.state() == QMediaPlayer.StoppedState:
+            self.audio_play_timer.start(random.randint(1000, 5000))
 
 
     def _open_control_box(self):
@@ -814,6 +851,9 @@ class CatCompanionApp(QWidget):
         self.cat_velocity_x = 0.0
         self.cat_velocity_y = 0.0
         self._set_animation('Idle')
+        self.media_player.stop() # Stop audio when control box is opened
+        self.audio_play_timer.stop() # Stop random audio timer
+
 
     def _on_control_box_closed(self):
         self.control_box = None
@@ -823,6 +863,8 @@ class CatCompanionApp(QWidget):
         self.cat_velocity_x = 0.0
         self.cat_velocity_y = 0.0
         self._set_animation('Idle')
+        if self.audio_enabled: # Resume audio timer when control box is closed
+            self.audio_play_timer.start(random.randint(1000, 5000))
 
     def _start_manual_movement(self, vx, vy):
         if self._is_jumping or self.is_sliding:
@@ -837,6 +879,8 @@ class CatCompanionApp(QWidget):
             self._set_animation('Walk')
         else:
             self._set_animation('Idle')
+        self.media_player.stop() # Stop audio during manual movement
+        self.audio_play_timer.stop()
 
     def start_manual_move_left(self):
         self.moving_right = False
@@ -857,6 +901,9 @@ class CatCompanionApp(QWidget):
             self.cat_velocity_x = 0.0
             self.cat_velocity_y = 0.0
             self._set_animation('Idle')
+        if self.audio_enabled and self.media_player.state() == QMediaPlayer.StoppedState:
+            self.audio_play_timer.start(random.randint(1000, 5000))
+
 
     def _manual_jump(self):
         if not self._is_jumping and not self.is_playing_one_shot_animation:
@@ -877,10 +924,45 @@ class CatCompanionApp(QWidget):
         else:
             self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
 
+    def _play_random_audio(self):
+        if not self.audio_enabled:
+            return
+
+        audio_url = self.audio_files.get(self.current_asset_type)
+        if audio_url and not audio_url.isEmpty():
+            self.media_player.setMedia(QMediaContent(audio_url))
+            self.media_player.play()
+        else:
+            print(f"No audio file found for {self.current_asset_type} or URL is empty.")
+        
+        # Restart timer for next potential audio playback
+        # This will trigger even if no audio was played, to keep checking
+        self.audio_play_timer.start(random.randint(5000, 15000))
+
+
+    def _audio_state_changed(self, state):
+        if state == QMediaPlayer.StoppedState and self.audio_enabled and not self._is_manual_moving and not self.is_playing_one_shot_animation:
+            self.audio_play_timer.start(random.randint(5000, 15000))
+
+    def _toggle_audio(self):
+        self.audio_enabled = not self.audio_enabled
+        if self.audio_enabled:
+            self.toggle_audio_action.setText("Disable Audio")
+            if self.media_player.state() == QMediaPlayer.StoppedState: # Only start if not already playing
+                self.audio_play_timer.start(random.randint(1000, 5000)) # Start with a short delay
+        else:
+            self.toggle_audio_action.setText("Enable Audio")
+            self.media_player.stop()
+            self.audio_play_timer.stop()
+
 
     def closeEvent(self, event):
         if self.control_box:
             self.control_box.close()
+
+        self.media_player.stop() # Stop audio when quitting
+        self.audio_play_timer.stop()
+
 
         if QApplication.quitOnLastWindowClosed():
             self.tray_icon.hide()
