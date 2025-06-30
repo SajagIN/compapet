@@ -1,9 +1,12 @@
 import sys
 import os
 import random
-import math # Import the math module for trigonometric functions
-from PyQt5.QtWidgets import QApplication, QLabel, QWidget, QPushButton, QVBoxLayout
-from PyQt5.QtGui import QPixmap, QTransform # QTransform is needed for flipping images
+import math
+from PyQt5.QtWidgets import (
+    QApplication, QLabel, QWidget, QPushButton, QVBoxLayout,
+    QSystemTrayIcon, QMenu, QAction, QDesktopWidget, QStyle # Added QStyle import here
+)
+from PyQt5.QtGui import QPixmap, QTransform, QIcon # QIcon needed for tray icon
 from PyQt5.QtCore import Qt, QTimer, QPoint, QRect
 
 # --- Configuration ---
@@ -20,6 +23,7 @@ RUN_SPEED_MULTIPLIER = 2.5 # Cat will run 2.5x faster than walk speed
 # --- Sprite Assets Mapping ---
 # This dictionary maps animation names to the number of frames they have.
 # The script will then construct the full paths based on this.
+# IMPORTANT: Assumes 'dog' assets have the same animation names and frame counts.
 ANIMATION_FRAMES = {
     "Dead": 10, "Fall": 8, "Hurt": 10, "Idle": 10, "Jump": 8, "Run": 8, "Slide": 10, "Walk": 10
 }
@@ -32,12 +36,9 @@ class MessageBox(QWidget):
     This message box also uses the Qt.WindowStaysOnTopHint to ensure
     it appears above other windows.
     """
-    def __init__(self, message):
-        super().__init__()
+    def __init__(self, message, parent=None):
+        super().__init__(parent, Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | Qt.Dialog)
         self.setWindowTitle("Information")
-        # Set window flags for dialog style: always on top, frameless, and a dialog type.
-        # Qt.WindowStaysOnTopHint ensures this message box appears above other applications.
-        self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint | Qt.Dialog)
         # Make the background translucent for a modern look.
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setStyleSheet("""
@@ -78,9 +79,12 @@ class MessageBox(QWidget):
         layout.addWidget(self.ok_button)
 
         self.adjustSize() # Adjust window size to fit content
-        # Center the message box on the screen
-        screen_rect = QApplication.desktop().screenGeometry()
-        self.move(screen_rect.center() - self.rect().center())
+        # Center the message box on the screen relative to its parent or desktop
+        if parent:
+            self.move(parent.mapToGlobal(parent.rect().center() - self.rect().center()))
+        else:
+            screen_rect = QApplication.desktop().screenGeometry()
+            self.move(screen_rect.center() - self.rect().center())
 
 
 class CatCompanionApp(QWidget):
@@ -90,7 +94,7 @@ class CatCompanionApp(QWidget):
     """
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Desk Cat Companion")
+        self.setWindowTitle("Desk Pet Companion")
 
         # --- Window Settings ---
         # Make the window frameless (no title bar, no borders)
@@ -108,8 +112,12 @@ class CatCompanionApp(QWidget):
         self.cat_label.setGeometry(0, 0, CAT_WIDTH, CAT_HEIGHT)
         self.cat_label.setAlignment(Qt.AlignCenter)
 
-        # --- Sprite Loading ---
-        self.sprites = self._load_sprites()
+        # --- Asset Management ---
+        # Default asset type is 'cat'
+        self.current_asset_type = 'cat'
+        self.sprites = {} # Will be populated by _load_sprites
+
+        # --- Animation State ---
         self.current_animation = 'Idle'
         self.current_frame_index = 0
 
@@ -129,7 +137,6 @@ class CatCompanionApp(QWidget):
         self.target_x = 0
         self.target_y = 0
 
-
         # --- Movement Timer ---
         # This timer controls how often the cat's position is updated.
         # Running at ~60 FPS (16ms interval) for smooth movement.
@@ -147,29 +154,91 @@ class CatCompanionApp(QWidget):
         self.dragging = False # Flag to indicate if the window is being dragged
         self.offset = QPoint() # Stores the offset from mouse click to window corner
 
-        # Set initial position (randomly within screen bounds)
-        self._set_initial_position()
+        # --- System Tray Setup ---
+        self.tray_icon = QSystemTrayIcon(self)
+        # Placeholder icon: you should replace 'tray_icon.png' with an actual icon
+        # for your app (e.g., a small cat/dog icon). For now, using a generic one.
+        # Ideally, create a 16x16 or 24x24 pixel icon for the tray.
+        # For simplicity, let's use a very basic icon for demonstration.
+        # If 'assets/tray_icon.png' doesn't exist, this will default to a blank icon.
+        tray_icon_path = os.path.join(os.path.dirname(__file__), 'assets', 'tray_icon.png')
+        if os.path.exists(tray_icon_path):
+            self.tray_icon.setIcon(QIcon(tray_icon_path))
+        else:
+            # Fallback for missing tray icon (e.g., a default system icon or a placeholder)
+            # Corrected: Used self.style() from QWidget, which needs QStyle imported
+            self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon)) # Example placeholder
 
-        # Initial animation setup
-        self._set_animation('Idle')
+        self.tray_icon.setToolTip("Desk Pet Companion")
+
+        # Create the tray menu
+        tray_menu = QMenu()
+
+        # Show/Hide action - Initial text is "Hide Pet" because it starts visible
+        self.toggle_visibility_action = QAction("Hide Pet", self)
+        self.toggle_visibility_action.triggered.connect(self.toggle_visibility)
+        tray_menu.addAction(self.toggle_visibility_action)
+
+        tray_menu.addSeparator()
+
+        # Pet Type Sub-menu
+        pet_type_menu = QMenu("Change Pet Type", self)
+        self.cat_action = QAction("Cat", self, checkable=True)
+        self.dog_action = QAction("Dog", self, checkable=True)
+
+        # Ensure only one is checked at a time
+        self.cat_action.triggered.connect(lambda: self.change_pet_type('cat'))
+        self.dog_action.triggered.connect(lambda: self.change_pet_type('dog'))
+
+        pet_type_menu.addAction(self.cat_action)
+        pet_type_menu.addAction(self.dog_action)
+        tray_menu.addMenu(pet_type_menu)
+
+        tray_menu.addSeparator()
+
+        # Exit action
+        exit_action = QAction("Exit", self)
+        exit_action.triggered.connect(QApplication.instance().quit)
+        tray_menu.addAction(exit_action)
+
+        self.tray_icon.setContextMenu(tray_menu)
+        self.tray_icon.show()
+
+        # Connect activated signal to handle double-click (or single-click depending on OS)
+        self.tray_icon.activated.connect(self.on_tray_icon_activated)
+
+        # Load initial sprites (cat by default)
+        self.change_pet_type(self.current_asset_type) # This will also set initial animation and position
+        self._set_initial_position() # Ensure initial position is set after loading sprites
+
+        # Initially show the main window instead of hiding it
+        self.show()
+        # Immediately start random movement if visible
+        self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
+
 
     def _get_asset_path(self, animation_name, frame_number):
         """
-        Constructs the full path to a sprite asset.
-        Uses os.path.dirname(__file__) to get the script's directory,
-        making asset loading robust regardless of current working directory.
+        Constructs the full path to a sprite asset based on the current_asset_type.
         """
-        base_dir = os.path.dirname(__file__) # This gets the directory where the script is located
-        # Construct the path to the specific sprite, e.g., 'path/to/script/assets/cat/Idle (1).png'
-        return os.path.join(base_dir, 'assets', 'cat', f'{animation_name} ({frame_number}).png')
+        base_dir = os.path.dirname(__file__)
+        return os.path.join(base_dir, 'assets', self.current_asset_type, f'{animation_name} ({frame_number}).png')
 
     def _load_sprites(self):
         """
-        Loads all sprite QPixmaps into memory for quick access.
+        Loads all sprite QPixmaps into memory for quick access for the current_asset_type.
         Caches them to avoid loading from disk repeatedly.
         Each pixmap is scaled to the desired CAT_WIDTH and CAT_HEIGHT.
+        Returns a dictionary of loaded sprites.
         """
         all_sprites = {}
+        asset_dir = os.path.join(os.path.dirname(__file__), 'assets', self.current_asset_type)
+
+        if not os.path.exists(asset_dir) or not os.path.isdir(asset_dir):
+            MessageBox(f"Error: Asset directory '{self.current_asset_type}' not found at '{asset_dir}'.\n"
+                       f"Please ensure '{self.current_asset_type}' sprites are correctly placed.", parent=self).show()
+            return {} # Return empty if directory is missing
+
         for anim_name, num_frames in ANIMATION_FRAMES.items():
             all_sprites[anim_name] = []
             for i in range(1, num_frames + 1):
@@ -179,13 +248,45 @@ class CatCompanionApp(QWidget):
                     if pixmap.isNull():
                         print(f"Warning: Could not load sprite from {path}")
                     else:
-                        # Scale pixmap to desired cat size, maintaining aspect ratio
                         all_sprites[anim_name].append(pixmap.scaled(
                             CAT_WIDTH, CAT_HEIGHT, Qt.KeepAspectRatio, Qt.SmoothTransformation
                         ))
                 except Exception as e:
                     print(f"Error loading {path}: {e}")
         return all_sprites
+
+    def change_pet_type(self, pet_type):
+        """
+        Changes the current pet type and reloads the sprites.
+        """
+        # Uncheck previous action
+        if self.current_asset_type == 'cat':
+            self.cat_action.setChecked(False)
+        elif self.current_asset_type == 'dog':
+            self.dog_action.setChecked(False)
+
+        self.current_asset_type = pet_type
+        self.sprites = self._load_sprites()
+
+        if self.sprites: # Only set animation if sprites were successfully loaded
+            self._set_animation('Idle')
+            # Check the current action
+            if self.current_asset_type == 'cat':
+                self.cat_action.setChecked(True)
+            elif self.current_asset_type == 'dog':
+                self.dog_action.setChecked(True)
+        else:
+            # If loading failed, revert to default or handle error
+            self.cat_label.setText(f"Error: No {pet_type} sprites found.")
+            self.animation_timer.stop()
+            self.movement_timer.stop()
+            self.random_behavior_timer.stop()
+            # Optionally revert to 'cat' if dog failed, and notify
+            if pet_type == 'dog':
+                self.current_asset_type = 'cat' # Revert to previous working state
+                self.cat_action.setChecked(True)
+                MessageBox(f"Failed to load 'dog' sprites. Reverted to 'cat'.", parent=self).show()
+
 
     def _set_initial_position(self):
         """Sets the cat's initial position randomly on the screen."""
@@ -201,13 +302,12 @@ class CatCompanionApp(QWidget):
         Changes the current animation state of the cat.
         Resets frame index when animation changes to start from the beginning of the new animation.
         """
-        # Fallback if the requested animation doesn't exist or has no frames
+        # Fallback if the requested animation doesn't exist or has no frames for the current pet type
         if new_animation_name not in self.sprites or not self.sprites[new_animation_name]:
-            print(f"Error: Animation '{new_animation_name}' not found or has no frames. Falling back to Idle.")
+            print(f"Error: Animation '{new_animation_name}' not found or has no frames for {self.current_asset_type}. Falling back to Idle.")
             new_animation_name = 'Idle'
             if 'Idle' not in self.sprites or not self.sprites['Idle']:
-                # If 'Idle' is also missing, display an error message and stop.
-                self.cat_label.setText("Error: No sprites loaded! Check assets folder.")
+                self.cat_label.setText(f"Error: No {self.current_asset_type} sprites loaded! Check assets folder.")
                 self.animation_timer.stop()
                 self.movement_timer.stop()
                 self.random_behavior_timer.stop()
@@ -226,8 +326,7 @@ class CatCompanionApp(QWidget):
             self.current_frame_index = (self.current_frame_index + 1) % len(sprites)
             self._update_cat_pixmap()
         else:
-            # If no sprites for the current animation, ensure no image is displayed
-            self.cat_label.clear()
+            self.cat_label.clear() # Clear the pixmap if no valid sprite to display
 
     def _update_cat_pixmap(self):
         """
@@ -242,7 +341,6 @@ class CatCompanionApp(QWidget):
                 pixmap = pixmap.transformed(QTransform().scale(-1, 1))
             self.cat_label.setPixmap(pixmap)
         else:
-            # Clear the pixmap if no valid sprite to display
             self.cat_label.clear()
 
     def _update_cat_position(self):
@@ -258,6 +356,7 @@ class CatCompanionApp(QWidget):
         new_x = current_x + self.cat_velocity_x
         new_y = current_y + self.cat_velocity_y
 
+        # Using QDesktopWidget().screenGeometry() for screen dimensions for compatibility
         screen_rect = QApplication.desktop().screenGeometry()
         max_x = screen_rect.width() - self.width()
         max_y = screen_rect.height() - self.height()
@@ -488,11 +587,48 @@ class CatCompanionApp(QWidget):
             self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
 
     def closeEvent(self, event):
-        """Custom close event to ensure all QTimers are properly stopped when the app closes."""
-        self.animation_timer.stop()
-        self.movement_timer.stop()
-        self.random_behavior_timer.stop()
-        event.accept() # Accept the close event, allowing the window to close
+        """
+        Custom close event. Handles app exit gracefully, hiding the window and
+        showing the tray icon, or quitting if explicitly from tray menu.
+        """
+        # If the app is quit from the tray menu, sys.exit() is called.
+        # If the user tries to close the window normally, we just hide it to tray.
+        if QApplication.quitOnLastWindowClosed():
+            self.tray_icon.hide()
+            event.accept()
+        else:
+            event.ignore()
+            self.hide() # Hide to tray
+            self.tray_icon.showMessage(
+                "Desk Pet Companion",
+                "The application is still running in the system tray. Click the icon to show/hide or exit.",
+                QSystemTrayIcon.Information,
+                2000
+            )
+
+    def toggle_visibility(self):
+        """Toggles the visibility of the main application window."""
+        if self.isVisible():
+            self.hide()
+            self.toggle_visibility_action.setText("Show Pet")
+            # When hiding, stop movement and go to idle
+            self.random_behavior_timer.stop()
+            self.cat_velocity_x = 0.0
+            self.cat_velocity_y = 0.0
+            self._set_animation('Idle')
+        else:
+            self.show()
+            self.toggle_visibility_action.setText("Hide Pet")
+            # When showing, restart random movement
+            self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
+
+
+    def on_tray_icon_activated(self, reason):
+        """Handles clicks on the system tray icon."""
+        if reason == QSystemTrayIcon.Trigger: # Left-click
+            self.toggle_visibility()
+        # On right-click (QSystemTrayIcon.Context), the context menu is automatically shown.
+
 
 # --- Main Execution ---
 if __name__ == '__main__':
@@ -501,24 +637,36 @@ if __name__ == '__main__':
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps) # Use high DPI pixmaps where available
 
     app = QApplication(sys.argv)
+    # Ensure the application quits when the last window is closed,
+    # unless it's explicitly hidden to the tray.
+    # We will control this behavior in closeEvent.
+    app.setQuitOnLastWindowClosed(False)
 
-    # Check if the assets directory exists before starting the app.
-    # This ensures the app doesn't crash if sprites are missing.
-    base_dir = os.path.dirname(__file__) # Gets the directory where the script is located
-    cat_assets_dir = os.path.join(base_dir, 'assets', 'cat') # Points to 'path/to/script/assets/cat'
 
-    if not os.path.exists(cat_assets_dir) or not os.path.isdir(cat_assets_dir):
-        msg = MessageBox(f"Error: 'assets/cat' directory not found at '{cat_assets_dir}'.\n"
-                         "Please ensure your sprite assets are correctly placed.")
+    # Check if a minimal assets directory structure exists
+    base_dir = os.path.dirname(__file__)
+    # For initial check, ensure at least 'assets/cat' exists.
+    # The individual asset type loading will handle 'dog' specifically.
+    initial_asset_check_dir = os.path.join(base_dir, 'assets', 'cat')
+
+    if not os.path.exists(initial_asset_check_dir) or not os.path.isdir(initial_asset_check_dir):
+        # Create a temporary QApplication to show message box before exiting
+        temp_app = QApplication([])
+        msg = MessageBox(f"Error: Default 'assets/cat' directory not found at '{initial_asset_check_dir}'.\n"
+                         "Please ensure your sprite assets are correctly placed.", parent=None)
         msg.show()
-        sys.exit(app.exec_()) # Exit the application if assets are missing
+        sys.exit(temp_app.exec_()) # Exit the application if default assets are missing
 
     # Initialize and show the main application window
     cat_app = CatCompanionApp()
-    cat_app.show()
 
-    # Show an initial message box to the user
-    initial_message_box = MessageBox("Your desktop cat companion is here! Drag it around or watch it wander.")
-    initial_message_box.show()
+    # Show an initial message box to the user from the tray icon
+    # This message now appears via the tray icon's message bubble.
+    cat_app.tray_icon.showMessage(
+        "Desk Pet Companion Started",
+        "The application is running in the system tray. Click the icon to show/hide your pet.",
+        QSystemTrayIcon.Information,
+        3000
+    )
 
     sys.exit(app.exec_()) # Start the Qt event loop
