@@ -269,12 +269,7 @@ class CatCompanionApp(QWidget):
         self.control_box = None
 
         self.tray_icon = QSystemTrayIcon(self)
-        tray_icon_path = os.path.join(os.path.dirname(__file__), 'assets', 'tray_icon.png')
-        if os.path.exists(tray_icon_path):
-            self.tray_icon.setIcon(QIcon(tray_icon_path))
-        else:
-            self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
-
+        
         self.tray_icon.setToolTip("Desk Pet Companion")
 
         tray_menu = QMenu()
@@ -310,6 +305,12 @@ class CatCompanionApp(QWidget):
         self.tray_icon.show()
 
         self.tray_icon.activated.connect(self.on_tray_icon_activated)
+
+        # Initialize tray icon animation attributes BEFORE calling change_pet_type
+        self.tray_icon_current_frame_index = 0
+        self.tray_animation_timer = QTimer(self)
+        self.tray_animation_timer.timeout.connect(self._update_tray_icon_animation)
+        self.tray_animation_timer.start(ANIMATION_FRAME_RATE * 2)
 
         self.change_pet_type(self.current_asset_type)
         self._set_initial_position()
@@ -362,11 +363,13 @@ class CatCompanionApp(QWidget):
                 self.cat_action.setChecked(True)
             elif self.current_asset_type == 'dog':
                 self.dog_action.setChecked(True)
+            self._update_tray_icon_animation()
         else:
             self.cat_label.setText(f"Error: No {pet_type} sprites found.")
             self.animation_timer.stop()
             self.movement_timer.stop()
             self.random_behavior_timer.stop()
+            self.tray_animation_timer.stop()
             if pet_type == 'dog':
                 self.current_asset_type = 'cat'
                 self.cat_action.setChecked(True)
@@ -865,6 +868,15 @@ class CatCompanionApp(QWidget):
             self.stop_manual_movement()
             self._start_slide_behavior()
 
+    def _update_tray_icon_animation(self):
+        idle_sprites = self.sprites.get('Idle')
+        if idle_sprites and len(idle_sprites) > 0:
+            self.tray_icon_current_frame_index = (self.tray_icon_current_frame_index + 1) % len(idle_sprites)
+            pixmap = idle_sprites[self.tray_icon_current_frame_index]
+            self.tray_icon.setIcon(QIcon(pixmap))
+        else:
+            self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
+
 
     def closeEvent(self, event):
         if self.control_box:
@@ -887,13 +899,9 @@ class CatCompanionApp(QWidget):
         if self.isVisible():
             self.hide()
             self.toggle_visibility_action.setText("Show Pet")
-            # Removed stopping random behavior, velocity resets, and setting idle here.
-            # The pet will continue its background animations.
         else:
             self.show()
             self.toggle_visibility_action.setText("Hide Pet")
-            # When showing, restart random movement only if not manually controlled
-            # (which implies random behavior would have been stopped anyway)
             if not self._is_manual_moving:
                 self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
 
