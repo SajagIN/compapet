@@ -22,6 +22,8 @@ GRAVITY = 0.8
 DEAD_ANIMATION_THRESHOLD = 5
 DEAD_ANIMATION_PAUSE_DURATION = 3000
 FOOD_SIZE = 40
+POOP_SIZE = 25
+POOP_SPAWN_INTERVAL = 15000
 
 ANIMATION_FRAMES = {
     "Dead": 10, "Fall": 8, "Hurt": 10, "Idle": 10, "Jump": 8, "Run": 8, "Slide": 10, "Walk": 10
@@ -44,13 +46,13 @@ class ControlBox(QWidget):
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setStyleSheet("""
             QWidget {
-                background-color: #2e2e2e;
+                background-color: 
                 border-radius: 10px;
                 font-family: 'Inter', sans-serif;
                 padding: 15px;
             }
             QPushButton {
-                background-color: #555555;
+                background-color: 
                 color: white;
                 padding: 10px 15px;
                 border-radius: 5px;
@@ -60,19 +62,19 @@ class ControlBox(QWidget):
                 min-height: 40px;
             }
             QPushButton:hover {
-                background-color: #666666;
+                background-color: 
             }
-            QPushButton#stopButton {
-                background-color: #ff6b6b;
+            QPushButton
+                background-color: 
             }
-            QPushButton#stopButton:hover {
-                background-color: #ff8c8c;
+            QPushButton
+                background-color: 
             }
-            QPushButton#actionButton {
-                background-color: #4CAF50;
+            QPushButton
+                background-color: 
             }
-            QPushButton#actionButton:hover {
-                background-color: #66BB6A;
+            QPushButton
+                background-color: 
             }
         """)
         self._init_ui()
@@ -221,7 +223,7 @@ class FoodItem(QLabel):
             x = random.randint(0, screen_rect.width() - self.width())
             y = random.randint(0, screen_rect.height() - self.height())
             self.move(x, y)
-        
+
         self.show()
         self.dragging = False
         self.offset = QPoint()
@@ -236,7 +238,7 @@ class FoodItem(QLabel):
         if self.dragging:
             new_pos = self.mapToGlobal(event.pos() - self.offset)
             screen_rect = QApplication.desktop().screenGeometry()
-            
+
             x = max(0, min(new_pos.x(), screen_rect.width() - self.width()))
             y = max(0, min(new_pos.y(), screen_rect.height() - self.height()))
             self.move(x, y)
@@ -245,6 +247,37 @@ class FoodItem(QLabel):
         if event.button() == Qt.LeftButton:
             self.dragging = False
 
+class PoopItem(QLabel): 
+    poop_removed = pyqtSignal(object)
+
+    def __init__(self, image_path="", initial_pos=None):
+        super().__init__()
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.BypassWindowManagerHint)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setScaledContents(True)
+
+        self.original_pixmap = QPixmap(image_path)
+        if not self.original_pixmap.isNull():
+            self.setPixmap(self.original_pixmap.scaled(POOP_SIZE, POOP_SIZE, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.resize(POOP_SIZE, POOP_SIZE)
+        else:
+            self.setText("Poop")
+            self.setStyleSheet("background-color: brown; border-radius: 5px;")
+            self.resize(POOP_SIZE, POOP_SIZE)
+
+        if initial_pos:
+            self.move(initial_pos)
+        else:
+            screen_rect = QApplication.desktop().screenGeometry()
+            x = random.randint(0, screen_rect.width() - self.width())
+            y = random.randint(0, screen_rect.height() - self.height())
+            self.move(x, y)
+
+        self.show()
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.poop_removed.emit(self)
 
 class CatCompanionApp(QWidget):
     def __init__(self):
@@ -261,7 +294,9 @@ class CatCompanionApp(QWidget):
         self.current_asset_type = 'cat'
         self.sprites = {}
         self.food_sprites = []
+        self.poop_sprites = []
         self.active_food_items = []
+        self.active_poop_items = []
         self.current_animation = 'Idle'
         self.current_frame_index = 0
 
@@ -321,7 +356,7 @@ class CatCompanionApp(QWidget):
         self.toggle_audio_action = QAction("Disable Audio", self)
         self.toggle_audio_action.triggered.connect(self._toggle_audio)
         tray_menu.addAction(self.toggle_audio_action)
-        
+
         food_menu = QMenu("Food", self)
         add_random_food_action = QAction("Add Random Food", self)
         add_random_food_action.triggered.connect(self.add_random_food)
@@ -331,6 +366,16 @@ class CatCompanionApp(QWidget):
         clear_all_food_action.triggered.connect(self.clear_all_food)
         food_menu.addAction(clear_all_food_action)
         tray_menu.addMenu(food_menu)
+
+        poop_menu = QMenu("Poop", self)
+        add_random_poop_action = QAction("Add Random Poop", self)
+        add_random_poop_action.triggered.connect(self.add_random_poop)
+        poop_menu.addAction(add_random_poop_action)
+
+        clear_all_poop_action = QAction("Clear All Poop", self)
+        clear_all_poop_action.triggered.connect(self.clear_all_poop)
+        poop_menu.addAction(clear_all_poop_action)
+        tray_menu.addMenu(poop_menu)
 
         tray_menu.addSeparator()
 
@@ -365,6 +410,7 @@ class CatCompanionApp(QWidget):
 
         self.change_pet_type(self.current_asset_type)
         self._load_food_sprites()
+        self._load_poop_sprites()
         self._set_initial_position()
         self.show()
 
@@ -374,6 +420,10 @@ class CatCompanionApp(QWidget):
         self._dead_animation_cooldown_timer = QTimer(self)
         self._dead_animation_cooldown_timer.setSingleShot(True)
         self._dead_animation_cooldown_timer.timeout.connect(self._dead_animation_cooldown_finished)
+
+        self.poop_spawn_timer = QTimer(self)
+        self.poop_spawn_timer.timeout.connect(self._spawn_random_poop)
+        self.poop_spawn_timer.start(POOP_SPAWN_INTERVAL)
 
     def _play_dead_animation(self):
         if 'Dead' not in self.sprites or not self.sprites['Dead']:
@@ -399,7 +449,7 @@ class CatCompanionApp(QWidget):
         self.current_animation = 'Dead'
         self.current_frame_index = 0
         self._update_cat_pixmap()
-        
+
         duration_to_last_frame = (len(self.sprites['Dead']) - 1) * ANIMATION_FRAME_RATE
         QTimer.singleShot(duration_to_last_frame, self._reached_last_dead_frame)
 
@@ -428,7 +478,7 @@ class CatCompanionApp(QWidget):
             self.is_dead = True
             self.revive_pet_action.setEnabled(True)
             return
-            
+
         self.is_playing_one_shot_animation = False
         self._set_animation('Idle')
         if not self._is_manual_moving and not self.is_dead and not self.target_food_item:
@@ -454,8 +504,29 @@ class CatCompanionApp(QWidget):
         self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
         if self.audio_enabled:
             self.audio_play_timer.start(random.randint(1000, 5000))
-        
+
         self._set_animation('Idle')
+
+    def _spawn_random_poop(self): 
+        if not self.poop_sprites:
+            print("No poop sprites available to spawn.")
+            return
+
+        pet_x = int(self._current_x)
+        pet_y = int(self._current_y)
+
+        spawn_x = pet_x + CAT_WIDTH // 2 - POOP_SIZE // 2
+        spawn_y = pet_y + CAT_HEIGHT - POOP_SIZE // 2 
+
+        screen_rect = QApplication.desktop().screenGeometry()
+        spawn_x = max(0, min(spawn_x, screen_rect.width() - POOP_SIZE))
+        spawn_y = max(0, min(spawn_y, screen_rect.height() - POOP_SIZE))
+
+        poop_path = random.choice(self.poop_sprites)
+        poop_item = PoopItem(image_path=poop_path, initial_pos=QPoint(spawn_x, spawn_y))
+        poop_item.poop_removed.connect(self._on_poop_removed)
+        self.active_poop_items.append(poop_item)
+        poop_item.show()
 
     def _get_asset_path(self, animation_name, frame_number):
         base_dir = os.path.dirname(__file__)
@@ -464,6 +535,10 @@ class CatCompanionApp(QWidget):
     def _get_food_asset_path(self, food_file_name):
         base_dir = os.path.dirname(__file__)
         return os.path.join(base_dir, 'assets', 'food', food_file_name)
+
+    def _get_poop_asset_path(self, poop_file_name):
+        base_dir = os.path.dirname(__file__)
+        return os.path.join(base_dir, 'assets', 'poop', poop_file_name)
 
     def _load_sprites(self):
         all_sprites = {}
@@ -487,7 +562,7 @@ class CatCompanionApp(QWidget):
                 except Exception as e:
                     print(f"Error loading {path}: {e}")
         return all_sprites
-    
+
     def _load_food_sprites(self):
         food_dir = os.path.join(os.path.dirname(__file__), 'assets', 'food')
         if not os.path.exists(food_dir) or not os.path.isdir(food_dir):
@@ -498,15 +573,29 @@ class CatCompanionApp(QWidget):
         for filename in os.listdir(food_dir):
             if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
                 self.food_sprites.append(self._get_food_asset_path(filename))
-        
+
         if not self.food_sprites:
             print("Warning: No food sprites found in 'assets/food' folder.")
+
+    def _load_poop_sprites(self):
+        poop_dir = os.path.join(os.path.dirname(__file__), 'assets', 'poop')
+        if not os.path.exists(poop_dir) or not os.path.isdir(poop_dir):
+            print(f"Error: Poop asset directory not found at '{poop_dir}'.")
+            return
+
+        self.poop_sprites = []
+        for filename in os.listdir(poop_dir):
+            if filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif')):
+                self.poop_sprites.append(self._get_poop_asset_path(filename))
+
+        if not self.poop_sprites:
+            print("Warning: No poop sprites found in 'assets/poop' folder.")
 
     def add_random_food(self):
         if not self.food_sprites:
             print("No food sprites available to add.")
             return
-        
+
         food_path = random.choice(self.food_sprites)
         food_item = FoodItem(image_path=food_path) 
         food_item.food_removed.connect(self._on_food_removed)
@@ -528,6 +617,29 @@ class CatCompanionApp(QWidget):
             food_item.deleteLater()
         self.active_food_items.clear()
         self.target_food_item = None
+
+    def add_random_poop(self):
+        if not self.poop_sprites:
+            print("No poop sprites available to add.")
+            return
+
+        poop_path = random.choice(self.poop_sprites)
+        poop_item = PoopItem(image_path=poop_path)
+        poop_item.poop_removed.connect(self._on_poop_removed)
+        self.active_poop_items.append(poop_item)
+        poop_item.show()
+
+    def _on_poop_removed(self, poop_item):
+        if poop_item in self.active_poop_items:
+            poop_item.hide()
+            poop_item.deleteLater()
+            self.active_poop_items.remove(poop_item)
+
+    def clear_all_poop(self):
+        for poop_item in list(self.active_poop_items):
+            poop_item.hide()
+            poop_item.deleteLater()
+        self.active_poop_items.clear()
 
     def _load_audio_file(self, pet_type):
         audio_path = os.path.join(os.path.dirname(__file__), 'assets', pet_type, 'audio.wav')
@@ -565,7 +677,7 @@ class CatCompanionApp(QWidget):
                 self.current_asset_type = 'cat'
                 self.cat_action.setChecked(True)
                 print(f"Failed to load 'dog' sprites. Reverted to 'cat'.")
-        
+
         self.media_player.stop()
         if self.audio_enabled:
             self.audio_play_timer.start(random.randint(1000, 5000)) 
@@ -654,7 +766,7 @@ class CatCompanionApp(QWidget):
                 target_food_pos = self.target_food_item.pos()
                 target_x = target_food_pos.x() + self.target_food_item.width() // 2
                 target_y = target_food_pos.y() + self.target_food_item.height() // 2
-                
+
                 cat_center_x = self._current_x + CAT_WIDTH // 2
                 cat_center_y = self._current_y + CAT_HEIGHT // 2
 
@@ -735,7 +847,7 @@ class CatCompanionApp(QWidget):
                 elif self.cat_velocity_x < 0:
                     self.moving_right = False
                 self._set_animation('Slide')
-        
+
         elif self.is_edge_running:
             self._current_x = max(0.0, min(self._current_x, float(max_x)))
             self._current_y = max(0.0, min(self._current_y, ground_y))
@@ -758,7 +870,7 @@ class CatCompanionApp(QWidget):
                 target_reached_y = True
 
             hit_boundary = (self._current_x <= 0 or self._current_x >= max_x or self._current_y <= 0 or self._current_y >= ground_y)
-            
+
             if (target_reached_x and target_reached_y) or hit_boundary:
                 self.is_edge_running = False
                 self.cat_velocity_x = 0.0
@@ -812,7 +924,6 @@ class CatCompanionApp(QWidget):
                 else:
                     self._set_animation('Idle')
 
-
     def _random_movement(self):
         if self.is_playing_one_shot_animation or self.is_sliding or self._is_manual_moving or self.is_dead or self.target_food_item:
             return
@@ -836,7 +947,7 @@ class CatCompanionApp(QWidget):
                 else:
                     vx = 0.0
                     vy = MOVEMENT_SPEED * random.choice([-1, 1])
-            
+
             self.cat_velocity_x = vx
             self.cat_velocity_y = vy
             self._set_animation('Walk')
@@ -880,7 +991,7 @@ class CatCompanionApp(QWidget):
 
         self.cat_velocity_x = (dx / distance) * MOVEMENT_SPEED * RUN_SPEED_MULTIPLIER
         self.cat_velocity_y = (dy / distance) * MOVEMENT_SPEED * RUN_SPEED_MULTIPLIER
-        
+
         self.is_edge_running = True
         self.target_x = target_x
         self.target_y = target_y
@@ -991,14 +1102,14 @@ class CatCompanionApp(QWidget):
                     self._play_one_shot_animation('Hurt')
             elif self.is_dead:
                 self._click_count = 0
-            
+
             if not self.is_dead:
                 if not self._is_manual_moving and not self._dead_animation_cooldown_timer.isActive() and not self.active_food_items:
                     self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
-                
+
                 if self.audio_enabled and self.media_player.state() == QMediaPlayer.StoppedState and not self._dead_animation_cooldown_timer.isActive():
                     self.audio_play_timer.start(random.randint(1000, 5000)) 
-        
+
         if not self.dragging and not self.target_food_item and self.active_food_items and not self.is_dead:
             self.target_food_item = self.active_food_items[0] if self.active_food_items else None
             if self.target_food_item:
@@ -1031,7 +1142,7 @@ class CatCompanionApp(QWidget):
             self.cat_velocity_y = 0.0
             duration_ms = len(self.sprites[animation_name]) * ANIMATION_FRAME_RATE
             QTimer.singleShot(duration_ms, self._one_shot_animation_finished)
-        
+
         self.current_animation = animation_name
         self.current_frame_index = 0
         self._update_cat_pixmap()
@@ -1053,7 +1164,7 @@ class CatCompanionApp(QWidget):
         else:
             self.control_box.activateWindow()
             self.control_box.raise_()
-        
+
         if not self.is_dead:
             self.random_behavior_timer.stop()
         self.is_edge_running = False
@@ -1136,7 +1247,6 @@ class CatCompanionApp(QWidget):
         else:
             self.tray_icon.setIcon(self.style().standardIcon(QStyle.SP_ComputerIcon))
 
-
     def _play_random_audio(self):
         if not self.audio_enabled or self.is_dead:
             return
@@ -1150,7 +1260,7 @@ class CatCompanionApp(QWidget):
 
     def _audio_state_changed(self, state):
         if state == QMediaPlayer.StoppedState and self.audio_enabled and not self._is_manual_moving and not self.is_playing_one_shot_animation and not self.is_dead:
-            self.audio_play_timer.start(random.randint(1000, 5000))
+            self.audio_play_timer.start(random.randint(5000, 15000))
 
     def _toggle_audio(self):
         self.audio_enabled = not self.audio_enabled
@@ -1170,6 +1280,7 @@ class CatCompanionApp(QWidget):
         self.audio_play_timer.stop()
         self._dead_animation_cooldown_timer.stop()
         self.clear_all_food()
+        self.clear_all_poop()
         if QApplication.quitOnLastWindowClosed():
             self.tray_icon.hide()
             event.accept()
@@ -1206,13 +1317,17 @@ if __name__ == '__main__':
     base_dir = os.path.dirname(__file__)
     initial_asset_check_dir = os.path.join(base_dir, 'assets', 'cat')
     food_asset_check_dir = os.path.join(base_dir, 'assets', 'food')
+    poop_asset_check_dir = os.path.join(base_dir, 'assets', 'poop')
 
     if not os.path.exists(initial_asset_check_dir) or not os.path.isdir(initial_asset_check_dir):
         print(f"Error: Default 'assets/cat' directory not found at '{initial_asset_check_dir}'.\nPlease ensure your sprite assets are correctly placed.")
         sys.exit(1)
-    
+
     if not os.path.exists(food_asset_check_dir) or not os.path.isdir(food_asset_check_dir):
         print(f"Warning: 'assets/food' directory not found at '{food_asset_check_dir}'.\nFood functionality will be limited or unavailable.")
+
+    if not os.path.exists(poop_asset_check_dir) or not os.path.isdir(poop_asset_check_dir):
+        print(f"Warning: 'assets/poop' directory not found at '{poop_asset_check_dir}'.\nPoop functionality will be limited or unavailable.")
 
     cat_app = CatCompanionApp()
     cat_app.tray_icon.showMessage(
