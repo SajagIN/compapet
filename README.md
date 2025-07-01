@@ -1,5 +1,7 @@
 # Compapet - Desk Pet Companion
 
+![](https://github.com/user-attachments/assets/b3afd11d-383a-487b-b9a0-385e3ecc2a10)
+
 This is a fun desktop companion application that brings a virtual pet (cat or dog) to your screen. The pet roams around your desktop, performs various animations, and can even chase after food items you place. It also, occasionally, leaves little "surprises" on your screen! You can control the pet's basic movements, toggle audio, and manage food and poop items through a control box or the system tray icon.
 
 ## Features
