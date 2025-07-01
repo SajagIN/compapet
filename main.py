@@ -21,7 +21,7 @@ JUMP_INITIAL_VELOCITY = 15.0
 GRAVITY = 0.8
 DEAD_ANIMATION_THRESHOLD = 5
 DEAD_ANIMATION_PAUSE_DURATION = 3000
-FOOD_SIZE = 40
+FOOD_SIZE = 160
 
 ANIMATION_FRAMES = {
     "Dead": 10, "Fall": 8, "Hurt": 10, "Idle": 10, "Jump": 8, "Run": 8, "Slide": 10, "Walk": 10
@@ -199,8 +199,8 @@ class ControlBox(QWidget):
 class FoodItem(QLabel):
     food_removed = pyqtSignal(object)
 
-    def __init__(self, image_path="", initial_pos=None): # Removed parent argument
-        super().__init__() # Initialized without a parent
+    def __init__(self, image_path="", initial_pos=None):
+        super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.BypassWindowManagerHint)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setScaledContents(True)
@@ -283,6 +283,7 @@ class CatCompanionApp(QWidget):
         self._is_manual_moving = False
         self._click_count = 0
         self.target_food_item = None
+        self.is_dead = False
 
         self.movement_timer = QTimer(self)
         self.movement_timer.timeout.connect(self._update_cat_position)
@@ -290,10 +291,6 @@ class CatCompanionApp(QWidget):
 
         self.random_behavior_timer = QTimer(self)
         self.random_behavior_timer.timeout.connect(self._random_movement)
-
-        self._dead_animation_cooldown_timer = QTimer(self)
-        self._dead_animation_cooldown_timer.setSingleShot(True)
-        self._dead_animation_cooldown_timer.timeout.connect(self._dead_animation_cooldown_finished)
 
         self.dragging = False
         self.offset = QPoint()
@@ -337,6 +334,11 @@ class CatCompanionApp(QWidget):
 
         tray_menu.addSeparator()
 
+        self.revive_pet_action = QAction("Revive Pet", self)
+        self.revive_pet_action.triggered.connect(self._reset_pet)
+        self.revive_pet_action.setEnabled(False) 
+        tray_menu.addAction(self.revive_pet_action)
+
         pet_type_menu = QMenu("Change Pet Type", self)
         self.cat_action = QAction("Cat", self, checkable=True)
         self.dog_action = QAction("Dog", self, checkable=True)
@@ -368,6 +370,92 @@ class CatCompanionApp(QWidget):
 
         self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
         self.audio_play_timer.start(random.randint(5000, 15000))
+
+        self._dead_animation_cooldown_timer = QTimer(self)
+        self._dead_animation_cooldown_timer.setSingleShot(True)
+        self._dead_animation_cooldown_timer.timeout.connect(self._dead_animation_cooldown_finished)
+
+    def _play_dead_animation(self):
+        if 'Dead' not in self.sprites or not self.sprites['Dead']:
+            print("Warning: Cannot play 'Dead' animation. Sprites not found. Reverting to Hurt.")
+            self._play_one_shot_animation('Hurt')
+            return
+
+        self.is_playing_one_shot_animation = True
+        self.random_behavior_timer.stop()
+        self.movement_timer.stop()
+        self.audio_play_timer.stop()
+        self.media_player.stop()
+        self.target_food_item = None
+        self.is_dead = True
+
+        self._is_manual_moving = False
+        self.is_edge_running = False
+        self.is_sliding = False
+        self._is_jumping = False
+        self.cat_velocity_x = 0.0
+        self.cat_velocity_y = 0.0
+
+        self.current_animation = 'Dead'
+        self.current_frame_index = 0
+        self._update_cat_pixmap()
+        
+        duration_to_last_frame = (len(self.sprites['Dead']) - 1) * ANIMATION_FRAME_RATE
+        QTimer.singleShot(duration_to_last_frame, self._reached_last_dead_frame)
+
+    def _reached_last_dead_frame(self):
+        if 'Dead' in self.sprites and self.sprites['Dead']:
+            self.current_frame_index = len(self.sprites['Dead']) - 1
+            self._update_cat_pixmap()
+        self.animation_timer.stop()
+        self.movement_timer.stop()
+        self.revive_pet_action.setEnabled(True)
+
+    def _dead_animation_cooldown_finished(self):
+        self.is_playing_one_shot_animation = False
+        self.animation_timer.start(ANIMATION_FRAME_RATE)
+        self.movement_timer.start(16)
+
+        self._set_animation('Idle')
+        if not self._is_manual_moving and not self.target_food_item:
+            self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
+        if self.audio_enabled:
+            self.audio_play_timer.start(random.randint(1000, 5000))
+
+    def _one_shot_animation_finished(self):
+        if self.current_animation == 'Dead':
+            self.is_playing_one_shot_animation = False
+            self.is_dead = True
+            self.revive_pet_action.setEnabled(True)
+            return
+            
+        self.is_playing_one_shot_animation = False
+        self._set_animation('Idle')
+        if not self._is_manual_moving and not self.is_dead and not self.target_food_item:
+            self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
+        if self.audio_enabled and self.media_player.state() == QMediaPlayer.StoppedState and not self.is_dead:
+            self.audio_play_timer.start(random.randint(1000, 5000))
+
+    def _reset_pet(self):
+        self.is_dead = False
+        self.is_playing_one_shot_animation = False
+        self._is_manual_moving = False
+        self.is_edge_running = False
+        self.is_sliding = False
+        self._is_jumping = False
+        self.cat_velocity_x = 0.0
+        self.cat_velocity_y = 0.0
+        self._click_count = 0
+        self.target_food_item = None
+        self.revive_pet_action.setEnabled(False)
+
+        self.animation_timer.start(ANIMATION_FRAME_RATE)
+        self.movement_timer.start(16)
+        self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
+        if self.audio_enabled:
+            self.audio_play_timer.start(random.randint(1000, 5000))
+        
+        self._set_animation('Idle')
 
     def _get_asset_path(self, animation_name, frame_number):
         base_dir = os.path.dirname(__file__)
@@ -420,7 +508,6 @@ class CatCompanionApp(QWidget):
             return
         
         food_path = random.choice(self.food_sprites)
-        # Removed parent=self to make FoodItem a top-level window
         food_item = FoodItem(image_path=food_path) 
         food_item.food_removed.connect(self._on_food_removed)
         self.active_food_items.append(food_item)
@@ -537,6 +624,11 @@ class CatCompanionApp(QWidget):
         screen_rect = QApplication.desktop().screenGeometry()
         max_x = screen_rect.width() - self.width()
         ground_y = float(screen_rect.height() - self.height())
+
+        if self.is_dead:
+            self.cat_velocity_x = 0.0
+            self.cat_velocity_y = 0.0
+            return
 
         if self._is_jumping:
             self.cat_velocity_y += GRAVITY
@@ -722,7 +814,7 @@ class CatCompanionApp(QWidget):
 
 
     def _random_movement(self):
-        if self.is_playing_one_shot_animation or self.is_sliding or self._is_manual_moving or self._dead_animation_cooldown_timer.isActive() or self.target_food_item:
+        if self.is_playing_one_shot_animation or self.is_sliding or self._is_manual_moving or self.is_dead or self.target_food_item:
             return
 
         random_choice = random.random()
@@ -875,6 +967,7 @@ class CatCompanionApp(QWidget):
             self._is_jumping = False
             self.media_player.stop() 
             self.target_food_item = None
+            self.is_dead = False
 
     def mouseMoveEvent(self, event):
         if self.dragging:
@@ -889,21 +982,24 @@ class CatCompanionApp(QWidget):
             mouse_release_pos = event.globalPos()
             distance_moved = (mouse_release_pos - self.mouse_press_pos).manhattanLength()
 
-            if distance_moved < CLICK_THRESHOLD:
+            if distance_moved < CLICK_THRESHOLD and not self.is_dead:
                 self._click_count += 1
                 if self._click_count >= DEAD_ANIMATION_THRESHOLD:
                     self._play_dead_animation()
                     self._click_count = 0
                 else:
                     self._play_one_shot_animation('Hurt')
-            else:
+            elif self.is_dead:
+                self._click_count = 0
+            
+            if not self.is_dead:
                 if not self._is_manual_moving and not self._dead_animation_cooldown_timer.isActive() and not self.active_food_items:
                     self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
-            
-            if self.audio_enabled and self.media_player.state() == QMediaPlayer.StoppedState and not self._dead_animation_cooldown_timer.isActive():
-                self.audio_play_timer.start(random.randint(1000, 5000)) 
+                
+                if self.audio_enabled and self.media_player.state() == QMediaPlayer.StoppedState and not self._dead_animation_cooldown_timer.isActive():
+                    self.audio_play_timer.start(random.randint(1000, 5000)) 
         
-        if not self.dragging and not self.target_food_item and self.active_food_items:
+        if not self.dragging and not self.target_food_item and self.active_food_items and not self.is_dead:
             self.target_food_item = self.active_food_items[0] if self.active_food_items else None
             if self.target_food_item:
                 self.random_behavior_timer.stop()
@@ -912,10 +1008,13 @@ class CatCompanionApp(QWidget):
                 self._is_manual_moving = False
 
     def _play_one_shot_animation(self, animation_name):
+        if self.is_dead:
+            return
+
         if animation_name not in self.sprites or not self.sprites[animation_name]:
             print(f"Warning: Cannot play one-shot animation '{animation_name}'. Sprites not found.")
             self.is_playing_one_shot_animation = False
-            if not self._is_manual_moving and not self._dead_animation_cooldown_timer.isActive() and not self.target_food_item:
+            if not self._is_manual_moving and not self.is_dead and not self.target_food_item:
                 self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
             return
 
@@ -937,63 +1036,6 @@ class CatCompanionApp(QWidget):
         self.current_frame_index = 0
         self._update_cat_pixmap()
 
-    def _one_shot_animation_finished(self):
-        if self.current_animation == 'Dead':
-            self._dead_animation_cooldown_timer.start(DEAD_ANIMATION_PAUSE_DURATION)
-            return
-            
-        self.is_playing_one_shot_animation = False
-        self._set_animation('Idle')
-        if not self._is_manual_moving and not self.target_food_item:
-            self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
-        if self.audio_enabled and self.media_player.state() == QMediaPlayer.StoppedState:
-            self.audio_play_timer.start(random.randint(1000, 5000))
-
-    def _play_dead_animation(self):
-        if 'Dead' not in self.sprites or not self.sprites['Dead']:
-            print("Warning: Cannot play 'Dead' animation. Sprites not found. Reverting to Hurt.")
-            self._play_one_shot_animation('Hurt')
-            return
-
-        self.is_playing_one_shot_animation = True
-        self.random_behavior_timer.stop()
-        self.movement_timer.stop()
-        self.audio_play_timer.stop()
-        self.media_player.stop()
-        self.target_food_item = None
-
-        self._is_manual_moving = False
-        self.is_edge_running = False
-        self.is_sliding = False
-        self._is_jumping = False
-        self.cat_velocity_x = 0.0
-        self.cat_velocity_y = 0.0
-
-        self.current_animation = 'Dead'
-        self.current_frame_index = 0
-        self._update_cat_pixmap()
-        
-        duration_to_last_frame = (len(self.sprites['Dead']) - 1) * ANIMATION_FRAME_RATE
-        QTimer.singleShot(duration_to_last_frame, self._reached_last_dead_frame)
-
-    def _reached_last_dead_frame(self):
-        if 'Dead' in self.sprites and self.sprites['Dead']:
-            self.current_frame_index = len(self.sprites['Dead']) - 1
-            self._update_cat_pixmap()
-        self.animation_timer.stop()
-        self._dead_animation_cooldown_timer.start(DEAD_ANIMATION_PAUSE_DURATION)
-
-    def _dead_animation_cooldown_finished(self):
-        self.is_playing_one_shot_animation = False
-        self.animation_timer.start(ANIMATION_FRAME_RATE)
-        self.movement_timer.start(16)
-
-        self._set_animation('Idle')
-        if not self._is_manual_moving and not self.target_food_item:
-            self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
-        if self.audio_enabled:
-            self.audio_play_timer.start(random.randint(1000, 5000))
-
     def _open_control_box(self):
         if self.control_box is None:
             self.control_box = ControlBox(self)
@@ -1012,7 +1054,8 @@ class CatCompanionApp(QWidget):
             self.control_box.activateWindow()
             self.control_box.raise_()
         
-        self.random_behavior_timer.stop()
+        if not self.is_dead:
+            self.random_behavior_timer.stop()
         self.is_edge_running = False
         self.is_sliding = False
         self._is_jumping = False
@@ -1028,16 +1071,16 @@ class CatCompanionApp(QWidget):
     def _on_control_box_closed(self):
         self.control_box = None
         self._is_manual_moving = False
-        if not self.is_playing_one_shot_animation and not self._dead_animation_cooldown_timer.isActive() and not self.active_food_items:
+        if not self.is_playing_one_shot_animation and not self.is_dead and not self.active_food_items:
             self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
         self.cat_velocity_x = 0.0
         self.cat_velocity_y = 0.0
         self._set_animation('Idle')
-        if self.audio_enabled and not self._dead_animation_cooldown_timer.isActive(): 
+        if self.audio_enabled and not self.is_dead: 
             self.audio_play_timer.start(random.randint(1000, 5000))
 
     def _start_manual_movement(self, vx, vy):
-        if self._is_jumping or self.is_sliding or self._dead_animation_cooldown_timer.isActive():
+        if self._is_jumping or self.is_sliding or self.is_dead:
             return
         self._is_manual_moving = True
         self.random_behavior_timer.stop()
@@ -1067,20 +1110,20 @@ class CatCompanionApp(QWidget):
         self._start_manual_movement(0.0, MOVEMENT_SPEED)
 
     def stop_manual_movement(self):
-        if not self._is_jumping and not self.is_sliding and not self._dead_animation_cooldown_timer.isActive():
+        if not self._is_jumping and not self.is_sliding and not self.is_dead:
             self.cat_velocity_x = 0.0
             self.cat_velocity_y = 0.0
             self._set_animation('Idle')
-        if self.audio_enabled and self.media_player.state() == QMediaPlayer.StoppedState and not self._dead_animation_cooldown_timer.isActive():
+        if self.audio_enabled and self.media_player.state() == QMediaPlayer.StoppedState and not self.is_dead:
             self.audio_play_timer.start(random.randint(1000, 5000))
 
     def _manual_jump(self):
-        if not self._is_jumping and not self.is_playing_one_shot_animation and not self._dead_animation_cooldown_timer.isActive():
+        if not self._is_jumping and not self.is_playing_one_shot_animation and not self.is_dead:
             self.stop_manual_movement()
             self._play_one_shot_animation('Jump')
 
     def _manual_slide(self):
-        if not self.is_sliding and not self.is_playing_one_shot_animation and not self._dead_animation_cooldown_timer.isActive():
+        if not self.is_sliding and not self.is_playing_one_shot_animation and not self.is_dead:
             self.stop_manual_movement()
             self._start_slide_behavior()
 
@@ -1095,7 +1138,7 @@ class CatCompanionApp(QWidget):
 
 
     def _play_random_audio(self):
-        if not self.audio_enabled or self._dead_animation_cooldown_timer.isActive():
+        if not self.audio_enabled or self.is_dead:
             return
         audio_url = self.audio_files.get(self.current_asset_type)
         if audio_url and not audio_url.isEmpty():
@@ -1106,14 +1149,14 @@ class CatCompanionApp(QWidget):
         self.audio_play_timer.start(random.randint(5000, 15000))
 
     def _audio_state_changed(self, state):
-        if state == QMediaPlayer.StoppedState and self.audio_enabled and not self._is_manual_moving and not self.is_playing_one_shot_animation and not self._dead_animation_cooldown_timer.isActive():
+        if state == QMediaPlayer.StoppedState and self.audio_enabled and not self._is_manual_moving and not self.is_playing_one_shot_animation and not self.is_dead:
             self.audio_play_timer.start(random.randint(1000, 5000))
 
     def _toggle_audio(self):
         self.audio_enabled = not self.audio_enabled
         if self.audio_enabled:
             self.toggle_audio_action.setText("Disable Audio")
-            if self.media_player.state() == QMediaPlayer.StoppedState and not self._dead_animation_cooldown_timer.isActive(): 
+            if self.media_player.state() == QMediaPlayer.StoppedState and not self.is_dead: 
                 self.audio_play_timer.start(random.randint(1000, 5000)) 
         else:
             self.toggle_audio_action.setText("Enable Audio")
@@ -1147,7 +1190,7 @@ class CatCompanionApp(QWidget):
         else:
             self.show()
             self.toggle_visibility_action.setText("Hide Pet")
-            if not self._is_manual_moving and not self._dead_animation_cooldown_timer.isActive():
+            if not self._is_manual_moving and not self.is_dead:
                 self.random_behavior_timer.start(MOVEMENT_CHANGE_DELAY)
 
     def on_tray_icon_activated(self, reason):
